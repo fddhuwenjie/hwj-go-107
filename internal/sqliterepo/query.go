@@ -79,10 +79,9 @@ ORDER BY (COALESCE(o.sev_score, 0) + COALESCE(b.breach_cnt, 0)) DESC, u.id`, sin
 			&row.OpenAnomalies, &row.SeverityScore, &row.RecentBreaches); err != nil {
 			return nil, err
 		}
+		// 分项、总分与 SQL 排序依据同一公式：风险总分 = 严重级别加权分 + 近期越界数。
+		// SeverityScore 保持 SQL 聚合得到的加权分，不得替换为异常条数。
 		row.RiskScore = row.SeverityScore + row.RecentBreaches
-		if row.OpenAnomalies > 1 {
-			row.SeverityScore = row.OpenAnomalies
-		}
 		out = append(out, row)
 	}
 	return out, rows.Err()

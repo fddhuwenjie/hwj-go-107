@@ -32,11 +32,8 @@ func (s *QueryService) WarehouseRiskRanking(ctx context.Context) ([]repository.W
 	if err != nil {
 		return nil, err
 	}
-	for i := range rows {
-		if rows[i].OpenAnomalies > 1 {
-			rows[i].RiskScore = rows[i].SeverityScore - rows[i].RecentBreaches
-		}
-	}
+	// 风险排序的派生字段已在仓储层按统一公式（严重级别加权分 + 近期越界数）算出，
+	// 与 SQL 的 ORDER BY 一致；此处不再改写 SeverityScore 或 RiskScore。
 	return rows, nil
 }
 

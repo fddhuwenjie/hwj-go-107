@@ -184,6 +184,72 @@ func TestWarehouseRiskRanking(t *testing.T) {
 	}
 }
 
+// TestWarehouseRiskRankingMultipleAnomalies 风险榜派生字段一致性。
+// 一个库房同时有两条未关闭 major 异常（加权分 3+3=6）和两次近期越界采样。
+// 分项 severity_score 必须保持加权分（不得退化成异常条数），risk_score 必须等于
+// severity_score + recent_breaches，且与 SQL 排序依据同公式，不得用减法。
+func TestWarehouseRiskRankingMultipleAnomalies(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv := env.SetupLevelWithRule("LV-M1")
+	wh, sensor := env.SetupWarehouse("WH-M1")
+	env.RegisterStoredArtifact("WJ-M1", lv.ID, wh.ID)
+	rule, err := env.Repo.Rules.ActiveByLevel(ctx, lv.ID)
+	if err != nil {
+		t.Fatalf("取启用规则失败: %v", err)
+	}
+
+	now := env.Now()
+	// 两次近期越界采样 → recent_breaches = 2，同时拿到合法的 sample_id。
+	var sampleID int64
+	for i := 0; i < 2; i++ {
+		smp, err := env.Env.IngestSample(ctx, sensor.ID, 30, 70, now+int64(i)*60)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sampleID = smp.ID
+	}
+
+	// 直接插入两条未关闭 major 异常，构造 OpenAnomalies > 1（巡检本身每单元只开一单）。
+	for k := 0; k < 2; k++ {
+		ev := &domain.AnomalyEvent{
+			StorageUnitID: wh.ID, RuleVersionID: rule.ID, SampleID: sampleID,
+			Severity: domain.SeverityMajor, Status: domain.AnomalyOpen, BreachCount: 3,
+			Title: "major 异常", Version: 1, OpenedAt: now,
+		}
+		if err := env.Repo.Anomalies.Create(ctx, ev); err != nil {
+			t.Fatalf("插入异常失败: %v", err)
+		}
+	}
+
+	ranking, err := env.Query.WarehouseRiskRanking(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranking) != 1 {
+		t.Fatalf("风险排序行数异常: %+v", ranking)
+	}
+	row := ranking[0]
+	// 分项：两条 major → 加权分 3+3=6，不得退化成异常条数 2。
+	if row.OpenAnomalies != 2 {
+		t.Fatalf("open_anomalies 期望 2，实际 %d", row.OpenAnomalies)
+	}
+	if row.SeverityScore != 6 {
+		t.Fatalf("severity_score 应保持加权分 6，被改成异常条数 %d", row.SeverityScore)
+	}
+	if row.RecentBreaches != 2 {
+		t.Fatalf("recent_breaches 期望 2，实际 %d", row.RecentBreaches)
+	}
+	// 总分：加法而非减法，与 SQL 排序依据同公式。
+	if row.RiskScore != row.SeverityScore+row.RecentBreaches {
+		t.Fatalf("risk_score 应为 severity+recent=%d，实际 %d",
+			row.SeverityScore+row.RecentBreaches, row.RiskScore)
+	}
+	if row.RiskScore != 8 {
+		t.Fatalf("risk_score 期望 8（6+2），实际 %d", row.RiskScore)
+	}
+}
+
 // TestConsecutiveBreachSensors 传感器连续越界查询。
 func TestConsecutiveBreachSensors(t *testing.T) {
 	env := testenv.New(t)
