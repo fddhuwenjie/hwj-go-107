@@ -2,7 +2,9 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"gowork/internal/domain"
@@ -165,5 +167,145 @@ func TestStablePagination(t *testing.T) {
 	}
 	if pages != 3 { // 10+10+5
 		t.Fatalf("页数异常 %d", pages)
+	}
+}
+
+// TestRuleVersionNoSilentReplace 仓储层：同等级同版本号重复创建必须返回冲突，
+// 绝不静默替换已存在的版本行（修复 INSERT OR REPLACE 的覆盖缺陷）。
+func TestRuleVersionNoSilentReplace(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv, err := env.Env.CreateLevel(ctx, "LV-VR", "等级", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 先写入一条 version_no=2 的规则
+	first := &domain.ThresholdRuleVersion{
+		LevelID: lv.ID, VersionNo: 2, TempMin: 14, TempMax: 24,
+		HumidityMin: 45, HumidityMax: 60, ConsecutiveBreach: 2,
+		Status: domain.RuleDraft, CreatedAt: env.Now(),
+	}
+	if err := env.Repo.Rules.Create(ctx, first); err != nil {
+		t.Fatalf("首次创建规则失败: %v", err)
+	}
+	originalID := first.ID
+
+	// 重复写入同版本号：应冲突而非替换
+	dup := &domain.ThresholdRuleVersion{
+		LevelID: lv.ID, VersionNo: 2, TempMin: 15, TempMax: 25,
+		HumidityMin: 40, HumidityMax: 65, ConsecutiveBreach: 3,
+		Status: domain.RuleDraft, CreatedAt: env.Now(),
+	}
+	err = env.Repo.Rules.Create(ctx, dup)
+	testenv.MustErr(t, err, "已存在")
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("重复版本号应返回冲突错误，实际: %v", err)
+	}
+
+	// 列表中仍只有原始那一条 version_no=2，且 ID 不变
+	list, err := env.Repo.Rules.List(ctx, repository.RuleFilter{LevelID: &lv.ID}, domain.Page{Limit: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count2 := 0
+	for _, r := range list {
+		if r.VersionNo == 2 {
+			count2++
+			if r.ID != originalID {
+				t.Fatalf("version_no=2 行被替换：原 id=%d 现 id=%d", originalID, r.ID)
+			}
+		}
+	}
+	if count2 != 1 {
+		t.Fatalf("version_no=2 应仅 1 条，实际 %d 条", count2)
+	}
+}
+
+// TestCreateRuleConcurrentAtomic 同一保存等级并发创建下一版阈值规则：
+// 两次调用必须各自成功且获得不同的版本号与 ID，列表最终保留两条第二、第三版，
+// 较早创建的规则不被静默替换。
+func TestCreateRuleConcurrentAtomic(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv, err := env.Env.CreateLevel(ctx, "LV-CC", "等级", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 初始已有第一版
+	first, err := env.Env.CreateRule(ctx, lv.ID, 14, 24, 45, 60, 2)
+	if err != nil {
+		t.Fatalf("创建初始规则失败: %v", err)
+	}
+	if first.VersionNo != 1 {
+		t.Fatalf("初始规则版本号应为 1，实际 %d", first.VersionNo)
+	}
+
+	const concurrency = 6
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		results []*domain.ThresholdRuleVersion
+		errs    []error
+	)
+	wg.Add(concurrency)
+	start := make(chan struct{})
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			<-start // 同时起跑，最大化并发竞争
+			rv, err := env.Env.CreateRule(ctx, lv.ID, 15, 25, 40, 65, 3)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			results = append(results, rv)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if len(errs) != 0 {
+		t.Fatalf("并发创建不应有失败，错误: %v", errs)
+	}
+	if len(results) != concurrency {
+		t.Fatalf("应有 %d 条并发创建成功，实际 %d", concurrency, len(results))
+	}
+
+	// 每次成功创建的版本号必须唯一，且无静默替换
+	versionSet := map[int]bool{}
+	idSet := map[int64]bool{}
+	for _, rv := range results {
+		if rv.VersionNo < 2 {
+			t.Fatalf("并发创建的版本号应 >=2，实际 %d", rv.VersionNo)
+		}
+		if versionSet[rv.VersionNo] {
+			t.Fatalf("出现重复版本号 %d（静默替换或并发泄漏）", rv.VersionNo)
+		}
+		versionSet[rv.VersionNo] = true
+		if idSet[rv.ID] {
+			t.Fatalf("出现重复规则 ID %d", rv.ID)
+		}
+		idSet[rv.ID] = true
+	}
+	// 版本号应为 2..(2+concurrency-1) 连续
+	if len(versionSet) != concurrency {
+		t.Fatalf("版本号集合大小 %d 与并发数 %d 不符", len(versionSet), concurrency)
+	}
+	for v := 2; v < 2+concurrency; v++ {
+		if !versionSet[v] {
+			t.Fatalf("缺少期望版本号 %d（版本号不连续）", v)
+		}
+	}
+
+	// 列表最终应保留全部版本：第一版 + 2..(2+concurrency-1)，无静默替换
+	list, err := env.Repo.Rules.List(ctx, repository.RuleFilter{LevelID: &lv.ID}, domain.Page{Limit: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1+concurrency {
+		t.Fatalf("规则列表应保留 %d 条（初始1+并发%d），实际 %d 条（存在静默替换）",
+			1+concurrency, concurrency, len(list))
 	}
 }

@@ -69,7 +69,9 @@ func scanRule(row interface{ Scan(...any) error }) (domain.ThresholdRuleVersion,
 const ruleCols = `id, level_id, version_no, temp_min, temp_max, humidity_min, humidity_max, consecutive_breach, status, created_at, activated_at`
 
 func (r *ruleRepo) Create(ctx context.Context, rv *domain.ThresholdRuleVersion) error {
-	res, err := r.q.ExecContext(ctx, `INSERT OR REPLACE INTO threshold_rule_versions
+	// 使用普通 INSERT 而非 INSERT OR REPLACE：UNIQUE(level_id, version_no) 冲突必须
+	// 上抛为领域冲突错误，由调用方重试，绝不可静默替换已存在的版本行。
+	res, err := r.q.ExecContext(ctx, `INSERT INTO threshold_rule_versions
 		(level_id, version_no, temp_min, temp_max, humidity_min, humidity_max, consecutive_breach, status, created_at)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
 		rv.LevelID, rv.VersionNo, rv.TempMin, rv.TempMax, rv.HumidityMin, rv.HumidityMax,

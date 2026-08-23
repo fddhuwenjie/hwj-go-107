@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"gowork/internal/domain"
@@ -97,7 +98,17 @@ func (s *EnvService) ListLevels(ctx context.Context, p domain.Page) (domain.Page
 	return domain.BuildPaged(items, p.Limit, func(l domain.PreservationLevel) int64 { return l.ID }), nil
 }
 
+// ruleVersionRetries 并发创建下一版阈值规则时，遇到 UNIQUE(level_id, version_no)
+// 冲突的最大重试次数。每次重试基于最新已提交数据重新计算版本号。
+const ruleVersionRetries = 8
+
 // CreateRule 创建阈值规则版本（draft，版本号自动递增）。
+//
+// 版本号计算与写入必须在同一事务内完成，以保证并发原子性：当两个管理员
+// 同时为同一保存等级创建下一版时，靠 SQLite 写事务串行化（MaxOpenConns(1) +
+// busy_timeout）使后开启的事务在先者提交后才开始；若仍因极窄并发窗口产生
+// UNIQUE(level_id, version_no) 冲突，则重试并基于最新数据重算版本号，
+// 绝不静默替换已存在的版本行。
 func (s *EnvService) CreateRule(ctx context.Context, levelID int64, tempMin, tempMax, humMin, humMax float64, consecutive int) (*domain.ThresholdRuleVersion, error) {
 	if tempMin >= tempMax || humMin >= humMax {
 		return nil, domain.Invalidf("阈值区间非法")
@@ -108,30 +119,59 @@ func (s *EnvService) CreateRule(ctx context.Context, levelID int64, tempMin, tem
 	if _, err := s.d.Repo.Levels.GetByID(ctx, levelID); err != nil {
 		return nil, err
 	}
+
 	var rule *domain.ThresholdRuleVersion
-	r := s.d.Repo
-	err := func() error {
-		existing, err := r.Rules.List(ctx, repository.RuleFilter{LevelID: &levelID}, domain.Page{Limit: 200})
-		if err != nil {
-			return err
+	var conflict error
+	for attempt := 0; attempt < ruleVersionRetries; attempt++ {
+		rule = nil
+		conflict = nil
+		err := s.d.Tx.Within(ctx, func(r *repository.Repositories) error {
+			// 计算与写入在同一事务：读最大版本号 → 写 maxNo+1。
+			return s.createRuleVersioned(ctx, r, levelID, tempMin, tempMax, humMin, humMax, consecutive, &rule)
+		})
+		if err == nil {
+			return rule, nil
 		}
-		maxNo := 0
-		for _, e := range existing {
-			if e.VersionNo > maxNo {
-				maxNo = e.VersionNo
-			}
+		if !errors.Is(err, domain.ErrConflict) {
+			return nil, err
 		}
-		rule = &domain.ThresholdRuleVersion{
-			LevelID: levelID, VersionNo: maxNo + 1,
-			TempMin: tempMin, TempMax: tempMax, HumidityMin: humMin, HumidityMax: humMax,
-			ConsecutiveBreach: consecutive, Status: domain.RuleDraft, CreatedAt: s.d.now(),
-		}
-		return r.Rules.Create(ctx, rule)
-	}()
-	if err != nil {
-		return nil, err
+		// UNIQUE(level_id, version_no) 冲突：另一并发创建已抢先提交同版本号。
+		// 回滚后在下一轮重算版本号，直至成功或耗尽重试。
+		conflict = err
 	}
-	return rule, nil
+	if conflict != nil {
+		return nil, conflict
+	}
+	return nil, domain.Rulef("创建阈值规则版本失败：重试耗尽")
+}
+
+// createRuleVersioned 在单事务内计算版本号并写入规则，遇到 UNIQUE 冲突时返回
+// ErrConflict 由调用方在外层重试。通过指针回填创建出的规则。
+func (s *EnvService) createRuleVersioned(
+	ctx context.Context, r *repository.Repositories, levelID int64,
+	tempMin, tempMax, humMin, humMax float64, consecutive int,
+	out **domain.ThresholdRuleVersion,
+) error {
+	existing, err := r.Rules.List(ctx, repository.RuleFilter{LevelID: &levelID}, domain.Page{Limit: 200})
+	if err != nil {
+		return err
+	}
+	maxNo := 0
+	for _, e := range existing {
+		if e.VersionNo > maxNo {
+			maxNo = e.VersionNo
+		}
+	}
+	rv := &domain.ThresholdRuleVersion{
+		LevelID: levelID, VersionNo: maxNo + 1,
+		TempMin: tempMin, TempMax: tempMax, HumidityMin: humMin, HumidityMax: humMax,
+		ConsecutiveBreach: consecutive, Status: domain.RuleDraft, CreatedAt: s.d.now(),
+	}
+	if err := r.Rules.Create(ctx, rv); err != nil {
+		return err
+	}
+	*out = rv
+	return nil
 }
 
 // ActivateRule 启用规则版本（同事务退役同等级旧版本）。
