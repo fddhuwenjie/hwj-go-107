@@ -122,6 +122,76 @@ func TestAcceptanceRollback(t *testing.T) {
 	}
 }
 
+// TestAcceptanceMultiItemAtomicRollback 多件藏品归还验收必须原子提交：
+// 任一藏品状态被外部流程改坏后验收失败，不得留下已通过的验收记录，
+// 借展须保持 returned，两件藏品都不完成恢复。
+// 复现预写链路逃出事务的缺陷：多件时验收记录在事务外先落库，回滚后仍残留。
+func TestAcceptanceMultiItemAtomicRollback(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv := env.SetupLevelWithRule("LV-MR")
+	wh, whSensor := env.SetupWarehouse("WH-MR")
+	_, scSensor := env.SetupShowcase("SC-MR")
+	art1 := env.RegisterStoredArtifact("WJ-MR1", lv.ID, wh.ID)
+	art2 := env.RegisterStoredArtifact("WJ-MR2", lv.ID, wh.ID)
+	env.SeedWindowQualified(whSensor.ID)
+	env.SeedWindowQualified(scSensor.ID)
+
+	// 两件藏品借展，走完整链路至归还待验收
+	loan := env.LoanOf("LN-MR", art1.ID, art2.ID)
+	loan, err := env.Loan.Approve(ctx, loan.ID, loan.Version, "赵六")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Check.OutCheck(ctx, loan.ID, "out-mr", "甲", env.CheckItemsAllPresent(art1.ID, art2.ID),
+		service.HandoverInput{FromPerson: "A", ToPerson: "B", HandedAt: env.Now() + 100, Location: "发货区"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Handover.ConfirmExhibition(ctx, loan.ID, scSensor.StorageUnitID, "C", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Check.InCheck(ctx, loan.ID, "in-mr", "乙", env.CheckItemsAllPresent(art1.ID, art2.ID)); err != nil {
+		t.Fatal(err)
+	}
+	art1, _ = env.Artifact.Get(ctx, art1.ID)
+	art2, _ = env.Artifact.Get(ctx, art2.ID)
+	if art1.Status != domain.ArtifactReturnedPending || art2.Status != domain.ArtifactReturnedPending {
+		t.Fatalf("归还清点后两件均应 returned_pending，实际 %s %s", art1.Status, art2.Status)
+	}
+
+	// 外部流程把第二件藏品状态改坏，验收中状态校验失败
+	env.DB.Exec(`UPDATE artifacts SET status='stored', version=version+1 WHERE id=?`, art2.ID)
+
+	_, err = env.Return.Accept(ctx, loan.ID, domain.AcceptPass, "王五", "完好")
+	testenv.MustErr(t, err, "不在待验收")
+
+	// 验收记录不得残留：原子回滚后详情不应出现已通过的归还验收
+	if _, err := env.Repo.Acceptances.AcceptanceByLoan(ctx, loan.ID); err == nil {
+		t.Fatalf("回滚后不应存在验收记录")
+	}
+	detail, err := env.Query.LoanDetail(ctx, loan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Acceptance != nil {
+		t.Fatalf("回滚后详情不应有验收记录，实际 %+v", detail.Acceptance)
+	}
+
+	// 借展保持 returned，两件藏品均未恢复
+	loan2, _ := env.Loan.Get(ctx, loan.ID)
+	if loan2.Status != domain.LoanReturned {
+		t.Fatalf("回滚后借展应保持 returned，实际 %s", loan2.Status)
+	}
+	art1c, _ := env.Artifact.Get(ctx, art1.ID)
+	art2c, _ := env.Artifact.Get(ctx, art2.ID)
+	if art1c.Status != domain.ArtifactReturnedPending {
+		t.Fatalf("第一件不应被恢复，实际 %s", art1c.Status)
+	}
+	if art2c.Status != "stored" { // 被外部改坏的状态保留，验收未触碰它
+		t.Fatalf("第二件状态异常，实际 %s", art2c.Status)
+	}
+}
+
 // TestStablePagination 键集分页稳定：多页无重复无遗漏，顺序按主键。
 func TestStablePagination(t *testing.T) {
 	env := testenv.New(t)
