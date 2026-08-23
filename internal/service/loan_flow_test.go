@@ -234,6 +234,90 @@ func TestRetireConstrained(t *testing.T) {
 	}
 }
 
+// TestRejectDraftBlocked 草稿借展未提交不得进入审批结论：
+// 直接驳回应被状态机拒绝，不得写入驳回状态、审批时间、规则快照或 attention 标志。
+func TestRejectDraftBlocked(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv := env.SetupLevelWithRule("LV-R1")
+	wh, _ := env.SetupWarehouse("WH-R1")
+	art := env.RegisterStoredArtifact("WJ-R1", lv.ID, wh.ID)
+
+	// 仅创建草稿，不提交
+	now := env.Now()
+	loan, err := env.Loan.Create(ctx, service.CreateLoanInput{
+		Code: "LN-DRAFT", Borrower: "省博物馆", Venue: "临展厅", Purpose: "特展",
+		StartAt: now + 7*86400, EndAt: now + 37*86400, ArtifactIDs: []int64{art.ID},
+	})
+	if err != nil {
+		t.Fatalf("创建草稿失败: %v", err)
+	}
+	if loan.Status != domain.LoanDraft {
+		t.Fatalf("期望 draft，实际 %s", loan.Status)
+	}
+
+	// 草稿直接驳回必须失败
+	_, err = env.Loan.Reject(ctx, loan.ID, loan.Version, "审批员", "理由不充分")
+	testenv.MustErr(t, err, "状态")
+
+	// 状态与持久化字段均不应被污染
+	got, err := env.Loan.Get(ctx, loan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.LoanDraft {
+		t.Fatalf("草稿驳回被拒后状态应为 draft，实际 %s", got.Status)
+	}
+	if got.ApprovedAt != nil {
+		t.Fatalf("草稿不应写审批时间，实际 %d", *got.ApprovedAt)
+	}
+	if got.RuleSnapshot != "" {
+		t.Fatalf("草稿不应写规则快照，实际 %q", got.RuleSnapshot)
+	}
+	if got.Attention {
+		t.Fatalf("草稿不应标记 attention")
+	}
+	if got.RejectReason != "" {
+		t.Fatalf("草稿不应写驳回理由，实际 %q", got.RejectReason)
+	}
+}
+
+// TestRejectSubmittedClean 已提交借展可被驳回，且驳回不污染审批时间/规则快照/attention。
+func TestRejectSubmittedClean(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv := env.SetupLevelWithRule("LV-R2")
+	wh, _ := env.SetupWarehouse("WH-R2")
+	art := env.RegisterStoredArtifact("WJ-R2", lv.ID, wh.ID)
+	loan := env.LoanOf("LN-SUB", art.ID) // 创建并提交
+
+	rej, err := env.Loan.Reject(ctx, loan.ID, loan.Version, "审批员", "材料不全")
+	if err != nil {
+		t.Fatalf("已提交借展驳回应成功: %v", err)
+	}
+	if rej.Status != domain.LoanRejected {
+		t.Fatalf("期望 rejected，实际 %s", rej.Status)
+	}
+	if rej.ApprovedBy != "审批员" || rej.RejectReason != "材料不全" {
+		t.Fatalf("驳回人与理由未持久化: %+v", rej)
+	}
+	// 驳回是审批终态，不应伪造审批时间、规则快照，也不应标记在途关注
+	if rej.ApprovedAt != nil {
+		t.Fatalf("驳回不应写审批时间，实际 %d", *rej.ApprovedAt)
+	}
+	if rej.RuleSnapshot != "" {
+		t.Fatalf("驳回不应写规则快照，实际 %q", rej.RuleSnapshot)
+	}
+	if rej.Attention {
+		t.Fatalf("驳回不应标记 attention")
+	}
+	// 藏品未被冻结
+	a, _ := env.Artifact.Get(ctx, art.ID)
+	if a.Status != domain.ArtifactStored {
+		t.Fatalf("驳回后藏品应仍在库，实际 %s", a.Status)
+	}
+}
+
 func auditFilter(entityType string, id int64) repository.AuditFilter {
 	return repository.AuditFilter{EntityType: &entityType, EntityID: &id}
 }

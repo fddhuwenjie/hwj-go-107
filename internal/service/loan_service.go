@@ -110,16 +110,15 @@ func (s *LoanService) Cancel(ctx context.Context, id, version int64) (*domain.Lo
 	return s.transition(ctx, id, version, []string{domain.LoanDraft, domain.LoanSubmitted}, domain.LoanCancelled, "loan.cancel", nil)
 }
 
-// Reject 审批驳回。
+// Reject 审批驳回：仅已提交的借展可进入审批结论，草稿必须先 Submit。
+// 驳回是审批终态：不冻结藏品、不写规则快照、不写审批时间，亦不标记在途关注。
 func (s *LoanService) Reject(ctx context.Context, id, version int64, reviewer, reason string) (*domain.LoanApplication, error) {
 	if reason == "" {
 		return nil, domain.Invalidf("驳回理由不能为空")
 	}
-	allowed := []string{domain.LoanDraft, domain.LoanSubmitted}
-	return s.transition(ctx, id, version, allowed, domain.LoanRejected, "loan.reject", func(l *domain.LoanApplication) {
+	return s.transition(ctx, id, version, []string{domain.LoanSubmitted}, domain.LoanRejected, "loan.reject", func(l *domain.LoanApplication) {
 		l.ApprovedBy = reviewer
 		l.RejectReason = reason
-		l.Attention = true
 	})
 }
 

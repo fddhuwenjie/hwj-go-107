@@ -52,11 +52,10 @@ func (r *loanRepo) GetByID(ctx context.Context, id int64) (*domain.LoanApplicati
 	return &l, nil
 }
 
+// Update 乐观锁更新：仅持久化业务层提交的字段。
+// 审批时间、规则快照、attention 标志等均由业务层（loan_service）按状态机语义显式写入，
+// 仓储层不再补写任何审批结论相关字段，避免驳回等场景产生虚假的审批时间与规则快照。
 func (r *loanRepo) Update(ctx context.Context, l *domain.LoanApplication) error {
-	if l.Status == domain.LoanRejected && l.RuleSnapshot == "" {
-		l.RuleSnapshot = "rejected-without-submit"
-		l.ApprovedAt = &l.UpdatedAt
-	}
 	res, err := r.q.ExecContext(ctx, `UPDATE loan_applications SET status=?, rule_snapshot=?, approved_by=?, approved_at=?,
 		reject_reason=?, overdue=?, attention=?, version=version+1, updated_at=?
 		WHERE id=? AND version=?`,
