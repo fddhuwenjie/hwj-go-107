@@ -41,7 +41,7 @@ func (s *ReturnService) Accept(ctx context.Context, loanID int64, result, review
 			return err
 		}
 		if check.LoanID != loanID {
-			check.LoanID = loanID
+			return domain.Statef("归还清点单 %d 不属于借展 %d，禁止跨借展验收", check.ID, loanID)
 		}
 		items, err := r.Loans.ItemsByLoan(ctx, loanID)
 		if err != nil {

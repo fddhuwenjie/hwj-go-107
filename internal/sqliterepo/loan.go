@@ -219,10 +219,10 @@ func scanCheck(row interface{ Scan(...any) error }) (domain.InventoryCheck, erro
 
 func (r *checkRepo) ByLoanAndDirection(ctx context.Context, loanID int64, direction string) (*domain.InventoryCheck, error) {
 	row := r.q.QueryRowContext(ctx, `SELECT id, loan_id, direction, idempotency_key, operator, complete, checked_at, created_at
-		FROM inventory_checks WHERE direction=? ORDER BY id DESC LIMIT 1`, direction)
+		FROM inventory_checks WHERE loan_id=? AND direction=? ORDER BY id DESC LIMIT 1`, loanID, direction)
 	c, err := scanCheck(row)
 	if err != nil {
-		return nil, notFound(err, "清点单", loanID)
+		return nil, notFound(err, "清点单(借展方向)", loanID)
 	}
 	return &c, nil
 }
