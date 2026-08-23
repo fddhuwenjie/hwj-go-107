@@ -2,7 +2,7 @@
 
 ## 项目
 
-- 项目编号：`hwj-gowork-107`
+- 项目编号：`hwj-go-107`
 - 项目名称：古籍文物库房环境异常处置与借展交接服务
 - 项目说明：基于 Go HTTP JSON 与 SQLite 文件持久化，管理文物藏品、库房环境、异常处置、借展交接和归还验收。
 
@@ -20,14 +20,14 @@
 评测镜像使用仓库内固定的 `benzhi.Dockerfile`，并通过 `build_benzhi_docker.sh` 构建：
 
 ```bash
-./build_benzhi_docker.sh hwj-gowork-107:benzhi-amd64 linux/amd64
-./build_benzhi_docker.sh hwj-gowork-107:benzhi-arm64 linux/arm64
+./build_benzhi_docker.sh hwj-go-107:benzhi-amd64 linux/amd64
+./build_benzhi_docker.sh hwj-go-107:benzhi-arm64 linux/arm64
 ```
 
 ## 运行
 
 ```bash
-docker run --rm -it --network none hwj-gowork-107:benzhi-amd64 bash
+docker run --rm -it --network none hwj-go-107:benzhi-amd64 bash
 ```
 
 ## 容器内验证

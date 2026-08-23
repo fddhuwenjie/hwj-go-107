@@ -92,8 +92,8 @@ go build ./...
 ## Docker 构建（linux/amd64、linux/arm64）
 
 ```bash
-./build_docker.sh hwj-gowork-107:amd64 linux/amd64
-./build_docker.sh hwj-gowork-107:arm64 linux/arm64
+./build_docker.sh hwj-go-107:amd64 linux/amd64
+./build_docker.sh hwj-go-107:arm64 linux/arm64
 ```
 
 镜像固定使用 `golang@sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d0d6baa7f26acb4957dd`，架构无关，`GOTOOLCHAIN=local`，go.mod 语言版本 `go 1.21`。容器内验证：
