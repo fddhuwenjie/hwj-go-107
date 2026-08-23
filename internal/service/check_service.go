@@ -87,15 +87,25 @@ func (s *CheckService) validateCoverage(ctx context.Context, r *repository.Repos
 	return items, expectedAtt, nil
 }
 
+// replayOwnsLoan 校验幂等回放命中的清点单确实归属当前借展。
+// 不同借展必须隔离回放结果：一旦命中却归属另一借展，说明幂等键跨借展复用，
+// 返回冲突而非把另一借展的清点明细/交接记录回放给当前借展。
+func (s *CheckService) replayOwnsLoan(existing *domain.InventoryCheck, loanID int64) error {
+	if existing.LoanID != loanID {
+		return domain.Conflictf("幂等键 %q 已用于借展 %d，不能在借展 %d 上回放", existing.IdempotencyKey, existing.LoanID, loanID)
+	}
+	return nil
+}
+
 // OutCheck 出库清点 + 首段交接，同一事务：清点单、清点明细、首段交接、藏品状态与借展状态。
 func (s *CheckService) OutCheck(ctx context.Context, loanID int64, idemKey, operator string, in []CheckItemInput, ho HandoverInput) (*CheckResult, error) {
 	if idemKey == "" || operator == "" {
 		return nil, domain.Invalidf("幂等键与清点人不能为空")
 	}
-	// 幂等回放
+	// 幂等回放：按精确幂等键查命中且必须归属同一借展，否则跨借展串台。
 	if existing, err := s.d.Repo.Checks.ByIdempotencyKey(ctx, idemKey); err == nil {
-		if existing.LoanID != loanID {
-			existing.LoanID = loanID
+		if err := s.replayOwnsLoan(existing, loanID); err != nil {
+			return nil, err
 		}
 		items, err := s.d.Repo.Checks.ItemsByCheck(ctx, existing.ID)
 		if err != nil {
@@ -218,7 +228,11 @@ func (s *CheckService) InCheck(ctx context.Context, loanID int64, idemKey, opera
 	if idemKey == "" || operator == "" {
 		return nil, domain.Invalidf("幂等键与清点人不能为空")
 	}
+	// 幂等回放：精确幂等键命中且必须归属同一借展，跨借展串台则拒绝。
 	if existing, err := s.d.Repo.Checks.ByIdempotencyKey(ctx, idemKey); err == nil {
+		if err := s.replayOwnsLoan(existing, loanID); err != nil {
+			return nil, err
+		}
 		items, err := s.d.Repo.Checks.ItemsByCheck(ctx, existing.ID)
 		if err != nil {
 			return nil, err

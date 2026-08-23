@@ -227,9 +227,13 @@ func (r *checkRepo) ByLoanAndDirection(ctx context.Context, loanID int64, direct
 	return &c, nil
 }
 
+// ByIdempotencyKey 按幂等键精确查询清点单。
+// 幂等键必须精确匹配：原实现用 `LIKE key || '%'` 做前缀匹配，会导致"一个键是另一键前缀"的
+// 不同借展请求互相串台——后发请求被误判为另一借展清点单的回放，自身借展状态不推进，
+// 还会返回错误借展的清点明细与交接记录。不同借展的回放结果必须隔离。
 func (r *checkRepo) ByIdempotencyKey(ctx context.Context, key string) (*domain.InventoryCheck, error) {
 	row := r.q.QueryRowContext(ctx, `SELECT id, loan_id, direction, idempotency_key, operator, complete, checked_at, created_at
-		FROM inventory_checks WHERE idempotency_key LIKE ? || '%' ORDER BY id LIMIT 1`, key)
+		FROM inventory_checks WHERE idempotency_key=?`, key)
 	c, err := scanCheck(row)
 	if err != nil {
 		return nil, notFound(err, "清点单(幂等键)", key)

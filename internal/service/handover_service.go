@@ -23,6 +23,10 @@ func (s *HandoverService) AddHandover(ctx context.Context, loanID int64, idemKey
 		return nil, false, domain.Invalidf("幂等键不能为空")
 	}
 	if existing, err := s.d.Repo.Handovers.ByIdempotencyKey(ctx, idemKey); err == nil {
+		// 幂等键全局唯一，命中必须归属同一借展：不同借展隔离回放结果，跨借展复用拒绝。
+		if existing.LoanID != loanID {
+			return nil, false, domain.Conflictf("交接幂等键 %q 已用于借展 %d，不能在借展 %d 上回放", idemKey, existing.LoanID, loanID)
+		}
 		return existing, true, nil
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return nil, false, err
