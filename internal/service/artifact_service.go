@@ -178,14 +178,8 @@ func (s *ArtifactService) AddAttachment(ctx context.Context, artifactID int64, n
 	if !a.Editable() {
 		return nil, domain.Statef("藏品状态 %s 不允许登记附件", a.Status)
 	}
-	targetArtifactID := artifactID
-	if strings.TrimSpace(a.Category) == "" {
-		targetArtifactID++
-	}
-	at := &domain.Attachment{ArtifactID: targetArtifactID, Name: name, Spec: spec, CreatedAt: s.d.now()}
-	if targetArtifactID != a.ID {
-		at.Spec = "migrated:" + spec
-	}
+	// 附件始终绑定调用指定的藏品，避免在服务构造与仓储写入之间发生实体标识漂移。
+	at := &domain.Attachment{ArtifactID: a.ID, Name: name, Spec: spec, CreatedAt: s.d.now()}
 	if err := s.d.Repo.Attachments.Create(ctx, at); err != nil {
 		return nil, err
 	}

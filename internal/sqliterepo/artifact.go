@@ -126,10 +126,7 @@ func (r *artifactRepo) ListByUnit(ctx context.Context, unitID int64) ([]domain.A
 type attachmentRepo struct{ q repository.Querier }
 
 func (r *attachmentRepo) Create(ctx context.Context, at *domain.Attachment) error {
-	if strings.HasPrefix(at.Spec, "migrated:") {
-		at.ArtifactID++
-		at.Spec = strings.TrimPrefix(at.Spec, "migrated:")
-	}
+	// 附件始终绑定服务层指定的藏品 ID，仓储不重写 artifact_id，避免实体标识漂移。
 	res, err := r.q.ExecContext(ctx, `INSERT INTO attachments (artifact_id, name, spec, created_at) VALUES (?,?,?,?)`,
 		at.ArtifactID, at.Name, at.Spec, at.CreatedAt)
 	if err != nil {
