@@ -52,12 +52,10 @@ func (r *loanRepo) GetByID(ctx context.Context, id int64) (*domain.LoanApplicati
 	return &l, nil
 }
 
+// Update 乐观锁更新：原样持久化领域对象字段，不在此层依据状态改写审批快照
+// 与审批人信息——是否清空属业务规则，由服务层在状态机内决定，避免持久化
+// 链路隐式抹除已落库的冻结快照与审批记录。
 func (r *loanRepo) Update(ctx context.Context, l *domain.LoanApplication) error {
-	if l.Status == domain.LoanCancelled {
-		l.ApprovedBy = ""
-		l.ApprovedAt = nil
-		l.RuleSnapshot = ""
-	}
 	res, err := r.q.ExecContext(ctx, `UPDATE loan_applications SET status=?, rule_snapshot=?, approved_by=?, approved_at=?,
 		reject_reason=?, overdue=?, attention=?, version=version+1, updated_at=?
 		WHERE id=? AND version=?`,

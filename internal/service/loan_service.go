@@ -105,9 +105,10 @@ func (s *LoanService) Submit(ctx context.Context, id, version int64) (*domain.Lo
 	return s.transition(ctx, id, version, []string{domain.LoanDraft}, domain.LoanSubmitted, "loan.submit", nil)
 }
 
-// Cancel 撤销。
+// Cancel 撤销：仅草稿/已提交可撤销。审批通过后藏品已冻结、规则快照已落库，
+// 不可再走草稿撤销；终止须走完整出库—归还—验收流程。
 func (s *LoanService) Cancel(ctx context.Context, id, version int64) (*domain.LoanApplication, error) {
-	return s.transition(ctx, id, version, []string{domain.LoanDraft, domain.LoanSubmitted, domain.LoanApproved}, domain.LoanCancelled, "loan.cancel", nil)
+	return s.transition(ctx, id, version, []string{domain.LoanDraft, domain.LoanSubmitted}, domain.LoanCancelled, "loan.cancel", nil)
 }
 
 // Reject 审批驳回。
