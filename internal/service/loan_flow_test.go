@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -236,4 +237,50 @@ func TestRetireConstrained(t *testing.T) {
 
 func auditFilter(entityType string, id int64) repository.AuditFilter {
 	return repository.AuditFilter{EntityType: &entityType, EntityID: &id}
+}
+
+// TestLoanDetailOutOnly 仅完成出库清点时，借展详情不得把出库清点冒充归还清点重复出现。
+// 回归：原方向查询对 'in' 兜底到 'out'，且组装循环改写方向，导致详情返回同一张 out 记录两次，
+// 调用方误以为归还清点已发生。
+func TestLoanDetailOutOnly(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv := env.SetupLevelWithRule("LV-1")
+	wh, sensor := env.SetupWarehouse("WH-A")
+	art := env.RegisterStoredArtifact("WJ-0005", lv.ID, wh.ID)
+	env.SeedWindowQualified(sensor.ID)
+	loan := env.LoanOf("LN-005", art.ID)
+	if _, err := env.Loan.Approve(ctx, loan.ID, loan.Version, "赵六"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Check.OutCheck(ctx, loan.ID, "out-key-5", "清点员甲", env.CheckItemsAllPresent(art.ID),
+		service.HandoverInput{FromPerson: "库管A", ToPerson: "押运B", HandedAt: env.Now() + 100, Location: "发货区"}); err != nil {
+		t.Fatalf("出库清点失败: %v", err)
+	}
+
+	detail, err := env.Query.LoanDetail(ctx, loan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 仅出库清点真实存在：一条且方向为 out，不得出现伪造的 in 记录
+	if len(detail.Checks) != 1 {
+		t.Fatalf("期望仅 1 张清点单，实际 %d: %+v", len(detail.Checks), detail.Checks)
+	}
+	seen := map[string]int{}
+	for _, c := range detail.Checks {
+		seen[c.Direction]++
+		if c.ID != detail.Checks[0].ID {
+			t.Fatalf("出现不同 id 的清点单，不应发生: %+v", detail.Checks)
+		}
+	}
+	if seen[domain.CheckOut] != 1 || seen[domain.CheckIn] != 0 {
+		t.Fatalf("期望仅 out 一张，实际方向统计 %+v: %+v", seen, detail.Checks)
+	}
+
+	// 归还清点尚未发生：按 in 查询应明确返回未找到，而非冒充出库清点
+	if _, err := env.Repo.Checks.ByLoanAndDirection(ctx, loan.ID, domain.CheckIn); err == nil {
+		t.Fatalf("尚未归还清点，按 in 查询不应返回记录")
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("期望 ErrNotFound，实际 %v", err)
+	}
 }

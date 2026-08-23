@@ -191,14 +191,11 @@ func (s *QueryService) LoanDetail(ctx context.Context, loanID int64) (*LoanDetai
 	if detail.Items, err = s.d.Repo.Loans.ItemsByLoan(ctx, loanID); err != nil {
 		return nil, err
 	}
+	// 各方向仅取真实存在的一张清点单；某方向未发生清点时跳过，不得用他方向记录顶替。
 	detail.Checks = []domain.InventoryCheck{}
-	directions := []string{domain.CheckOut, domain.CheckIn}
-	for _, dir := range directions {
+	for _, dir := range []string{domain.CheckOut, domain.CheckIn} {
 		c, err := s.d.Repo.Checks.ByLoanAndDirection(ctx, loanID, dir)
 		if err == nil {
-			if c.Direction != dir {
-				c.Direction = dir
-			}
 			detail.Checks = append(detail.Checks, *c)
 		} else if !errors.Is(err, domain.ErrNotFound) {
 			return nil, err

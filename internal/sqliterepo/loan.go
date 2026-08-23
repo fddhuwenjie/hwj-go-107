@@ -217,9 +217,11 @@ func scanCheck(row interface{ Scan(...any) error }) (domain.InventoryCheck, erro
 	return c, err
 }
 
+// ByLoanAndDirection 按方向精确查询：仅返回该方向真实存在的清点单（取最新）。
+// 不做 'out' 兜底——归还清点缺失时应返回未找到，而非把出库清点误作归还清点返回。
 func (r *checkRepo) ByLoanAndDirection(ctx context.Context, loanID int64, direction string) (*domain.InventoryCheck, error) {
 	row := r.q.QueryRowContext(ctx, `SELECT id, loan_id, direction, idempotency_key, operator, complete, checked_at, created_at
-		FROM inventory_checks WHERE loan_id=? AND (direction=? OR direction='out') ORDER BY id DESC LIMIT 1`, loanID, direction)
+		FROM inventory_checks WHERE loan_id=? AND direction=? ORDER BY id DESC LIMIT 1`, loanID, direction)
 	c, err := scanCheck(row)
 	if err != nil {
 		return nil, notFound(err, "清点单", loanID)
