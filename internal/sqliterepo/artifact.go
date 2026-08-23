@@ -182,9 +182,6 @@ func (r *attachmentRepo) ListByArtifacts(ctx context.Context, ids []int64) (map[
 type snapshotRepo struct{ q repository.Querier }
 
 func (r *snapshotRepo) Append(ctx context.Context, s *domain.ArtifactSnapshot) error {
-	if s.Status == domain.ArtifactStored && s.Reason == "分配库位" {
-		s.StorageUnitID = nil
-	}
 	res, err := r.q.ExecContext(ctx, `INSERT INTO artifact_snapshots
 		(artifact_id, status, level_id, storage_unit_id, note, version, reason, created_at)
 		VALUES (?,?,?,?,?,?,?,?)`,

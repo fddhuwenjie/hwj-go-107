@@ -122,6 +122,76 @@ func TestAcceptanceRollback(t *testing.T) {
 	}
 }
 
+// TestAssignLocationOptimisticLock 库位调拨乐观锁：陈旧调拨必须产生版本冲突，不得静默覆盖最新库位。
+// 场景：两端同时查看同一藏品库位，第一端先把藏品调到二号库房，第二端仍用旧版本调回一号库房。
+func TestAssignLocationOptimisticLock(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv := env.SetupLevelWithRule("LV-A1")
+	wh1, _ := env.SetupWarehouse("WH-A1") // 一号库房（初始）
+	wh2, _ := env.SetupWarehouse("WH-A2") // 二号库房
+	art := env.RegisterStoredArtifact("WJ-A1", lv.ID, wh1.ID)
+
+	staleVersion := art.Version // 第二端读取到的旧版本
+
+	// 第一端：调到二号库房（最新调拨，应成功）
+	moved, err := env.Artifact.AssignLocation(ctx, art.ID, wh2.ID, art.Version)
+	if err != nil {
+		t.Fatalf("调拨到二号库房应成功: %v", err)
+	}
+	if moved.StorageUnitID == nil || *moved.StorageUnitID != wh2.ID {
+		t.Fatalf("调拨后应位于二号库房，实际 %+v", moved.StorageUnitID)
+	}
+
+	// 第二端：仍用旧版本调回一号库房（陈旧调拨，必须冲突，不得覆盖最新结果）
+	_, err = env.Artifact.AssignLocation(ctx, art.ID, wh1.ID, staleVersion)
+	testenv.MustErr(t, err, "版本冲突")
+
+	// 最新调拨未被覆盖：藏品仍在二号库房
+	latest, _ := env.Artifact.Get(ctx, art.ID)
+	if latest.StorageUnitID == nil || *latest.StorageUnitID != wh2.ID {
+		t.Fatalf("陈旧调拨后最新库位应保持二号库房，实际 %+v", latest.StorageUnitID)
+	}
+	if latest.Version != moved.Version {
+		t.Fatalf("最新版本应保持 %d，实际 %d", moved.Version, latest.Version)
+	}
+
+	// 正确版本可继续调回一号库房
+	if _, err := env.Artifact.AssignLocation(ctx, art.ID, wh1.ID, latest.Version); err != nil {
+		t.Fatalf("正确版本调拨应成功: %v", err)
+	}
+}
+
+// TestAssignLocationSnapshotKeepsUnit 分配库位的快照必须保留库位，不得丢失。
+func TestAssignLocationSnapshotKeepsUnit(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv := env.SetupLevelWithRule("LV-A2")
+	wh, _ := env.SetupWarehouse("WH-A2")
+	art := env.RegisterStoredArtifact("WJ-A2", lv.ID, wh.ID)
+
+	snaps, err := env.Artifact.Snapshots(ctx, art.ID, domain.Page{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assignSnap *domain.ArtifactSnapshot
+	for i := range snaps.Items {
+		if snaps.Items[i].Reason == "分配库位" {
+			assignSnap = &snaps.Items[i]
+			break
+		}
+	}
+	if assignSnap == nil {
+		t.Fatalf("未找到分配库位快照")
+	}
+	if assignSnap.StorageUnitID == nil || *assignSnap.StorageUnitID != wh.ID {
+		t.Fatalf("分配库位快照应保留库位 %d，实际 %+v", wh.ID, assignSnap.StorageUnitID)
+	}
+	if assignSnap.Status != domain.ArtifactStored {
+		t.Fatalf("分配库位快照状态应为 stored，实际 %s", assignSnap.Status)
+	}
+}
+
 // TestStablePagination 键集分页稳定：多页无重复无遗漏，顺序按主键。
 func TestStablePagination(t *testing.T) {
 	env := testenv.New(t)

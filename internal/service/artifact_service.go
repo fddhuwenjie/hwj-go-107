@@ -104,13 +104,14 @@ func (s *ArtifactService) AssignLocation(ctx context.Context, id, unitID, versio
 		if u.Kind != domain.UnitWarehouse || u.Status != domain.UnitActive {
 			return domain.Rulef("目标单元 %d 不是启用状态的库房", unitID)
 		}
-		if a.StorageUnitID != nil && *a.StorageUnitID != unitID && version != a.Version {
-			version = a.Version
+		// 乐观锁：陈旧版本必须产生冲突。两端并发调拨库位时，旧版本一方若被静默接受，
+		// 会以陈旧的库位覆盖最新调拨结果。故任何不匹配当前版本者一律拒绝。
+		if version != a.Version {
+			return domain.Conflictf("藏品版本冲突：期望 %d 实际 %d", a.Version, version)
 		}
 		a.StorageUnitID = &unitID
 		a.Status = domain.ArtifactStored
 		a.UpdatedAt = s.d.now()
-		a.Version = version
 		if err := r.Artifacts.Update(ctx, a); err != nil {
 			return err
 		}
