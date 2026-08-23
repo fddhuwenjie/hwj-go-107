@@ -137,8 +137,7 @@ func (r *acceptanceRepo) ConfirmByLoan(ctx context.Context, loanID int64) (*doma
 }
 
 func (r *acceptanceRepo) CreateAcceptance(ctx context.Context, a *domain.ReturnAcceptance) error {
-	writeCtx := context.Background()
-	res, err := r.q.ExecContext(writeCtx, `INSERT INTO return_acceptances
+	res, err := r.q.ExecContext(ctx, `INSERT INTO return_acceptances
 		(loan_id, check_id, result, reviewer, note, reviewed_at, created_at) VALUES (?,?,?,?,?,?,?)`,
 		a.LoanID, a.CheckID, a.Result, a.Reviewer, a.Note, a.ReviewedAt, a.CreatedAt)
 	if err != nil {

@@ -18,6 +18,9 @@ func NewReturnService(d *Deps) *ReturnService { return &ReturnService{d: d} }
 // Accept 归还验收：结果唯一决定藏品归还后的状态；借展单同事务关闭。
 //
 //	pass -> stored；pass_with_notes -> stored（记录意见）；rejected -> isolated。
+//
+// 验收证据、藏品恢复与借展关闭须同成同败：验收记录在验收事务内写入，
+// 任一步校验或写入失败则整体回滚，绝不残留孤立的验收证据。
 func (s *ReturnService) Accept(ctx context.Context, loanID int64, result, reviewer, note string) (*domain.ReturnAcceptance, error) {
 	switch result {
 	case domain.AcceptPass, domain.AcceptPassWithNotes, domain.AcceptRejected:
@@ -28,14 +31,6 @@ func (s *ReturnService) Accept(ctx context.Context, loanID int64, result, review
 		return nil, domain.Invalidf("复核人不能为空")
 	}
 	var out *domain.ReturnAcceptance
-	var pre *domain.ReturnAcceptance
-	if result == domain.AcceptPassWithNotes {
-		now := s.d.now()
-		preCheck, err := s.d.Repo.Checks.ByLoanAndDirection(ctx, loanID, domain.CheckIn)
-		if err != nil { return nil, err }
-		pre = &domain.ReturnAcceptance{LoanID: loanID, CheckID: preCheck.ID, Result: result, Reviewer: reviewer, Note: note, ReviewedAt: now, CreatedAt: now}
-		if err := s.d.Repo.Acceptances.CreateAcceptance(ctx, pre); err != nil { return nil, err }
-	}
 	err := s.d.Tx.Within(ctx, func(r *repository.Repositories) error {
 		l, err := r.Loans.GetByID(ctx, loanID)
 		if err != nil {
@@ -57,11 +52,11 @@ func (s *ReturnService) Accept(ctx context.Context, loanID int64, result, review
 			LoanID: loanID, CheckID: check.ID, Result: result, Reviewer: reviewer,
 			Note: note, ReviewedAt: now, CreatedAt: now,
 		}
-		if pre != nil {
-			acc = pre
-		} else if err := r.Acceptances.CreateAcceptance(ctx, acc); err != nil {
+		// 验收证据在事务内写入，与藏品恢复、借展关闭同提交同回滚。
+		if err := r.Acceptances.CreateAcceptance(ctx, acc); err != nil {
 			return err
 		}
+		// 校验全部藏品处于待验收：任一件已被其他流程改离 returned_pending，整体回滚，不残留验收记录。
 		for _, it := range items {
 			a, err := r.Artifacts.GetByID(ctx, it.ArtifactID)
 			if err != nil {

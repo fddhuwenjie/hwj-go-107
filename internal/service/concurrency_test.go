@@ -122,6 +122,100 @@ func TestAcceptanceRollback(t *testing.T) {
 	}
 }
 
+// setupReturnedLoan 构造一个已归还待验收的借展（含多件藏品），借展 returned、藏品 returned_pending。
+func setupReturnedLoan(t *testing.T, env *testenv.Env, code string, n int) (loanID int64, artIDs []int64) {
+	t.Helper()
+	ctx := context.Background()
+	lv := env.SetupLevelWithRule("LV-" + code)
+	wh, sensor := env.SetupWarehouse("WH-" + code)
+	sc, scSensor := env.SetupShowcase("SC-" + code)
+	for i := 0; i < n; i++ {
+		artIDs = append(artIDs, env.RegisterStoredArtifact(fmt.Sprintf("WJ-%s%d", code, i), lv.ID, wh.ID).ID)
+	}
+	env.SeedWindowQualified(sensor.ID)
+	env.SeedWindowQualified(scSensor.ID)
+	loan := env.LoanOf("LN-"+code, artIDs...)
+	if _, err := env.Loan.Approve(ctx, loan.ID, loan.Version, "赵六"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Check.OutCheck(ctx, loan.ID, "out-"+code, "甲", env.CheckItemsAllPresent(artIDs...),
+		service.HandoverInput{FromPerson: "库管A", ToPerson: "押运B", HandedAt: env.Now() + 100, Location: "发货区"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Handover.ConfirmExhibition(ctx, loan.ID, sc.ID, "C", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Check.InCheck(ctx, loan.ID, "in-"+code, "乙", env.CheckItemsAllPresent(artIDs...)); err != nil {
+		t.Fatal(err)
+	}
+	return loan.ID, artIDs
+}
+
+// TestAcceptancePassWithNotesAtomicity pass_with_notes 验收须同成同败：
+// 任一件藏品被其他流程改离 returned_pending，验收失败且不残留验收证据、藏品不恢复、借展不关闭。
+func TestAcceptancePassWithNotesAtomicity(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	loanID, artIDs := setupReturnedLoan(t, env, "AW", 2)
+
+	// 其他流程把其中一件藏品移出待验收（例如隔离），制造跨仓储事务边界冲突
+	env.DB.Exec(`UPDATE artifacts SET status='isolated', version=version+1 WHERE id=?`, artIDs[0])
+
+	_, err := env.Return.Accept(ctx, loanID, domain.AcceptPassWithNotes, "王五", "略有磨损")
+	testenv.MustErr(t, err, "不在待验收")
+
+	// 验收证据不应残留：详情查询看不到验收记录
+	if _, err := env.Repo.Acceptances.AcceptanceByLoan(ctx, loanID); err == nil {
+		t.Fatalf("验收失败后不应残留验收记录")
+	}
+	detail, derr := env.Query.LoanDetail(ctx, loanID)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	if detail.Acceptance != nil {
+		t.Fatalf("借展详情不应包含验收记录，实际 %+v", detail.Acceptance)
+	}
+	// 借展应保持 returned（未关闭）
+	if detail.Loan.Status != domain.LoanReturned {
+		t.Fatalf("验收失败后借展应保持 returned，实际 %s", detail.Loan.Status)
+	}
+	// 藏品不应被恢复：被改乱的保持被改乱状态，另一件仍待验收
+	a0, _ := env.Artifact.Get(ctx, artIDs[0])
+	if a0.Status != domain.ArtifactIsolated {
+		t.Fatalf("被改乱的藏品不应被恢复，实际 %s", a0.Status)
+	}
+	a1, _ := env.Artifact.Get(ctx, artIDs[1])
+	if a1.Status != domain.ArtifactReturnedPending {
+		t.Fatalf("另一件藏品应保持 returned_pending，实际 %s", a1.Status)
+	}
+	// 验收审计不应残留
+	var auditCnt int
+	env.DB.QueryRow(`SELECT COUNT(1) FROM audit_logs WHERE entity_type='loan' AND entity_id=? AND action='loan.return_acceptance'`, loanID).Scan(&auditCnt)
+	if auditCnt != 0 {
+		t.Fatalf("验收失败后不应残留验收审计")
+	}
+
+	// 复原藏品状态后，pass_with_notes 应能整体成功：验收、藏品恢复、借展关闭同成
+	env.DB.Exec(`UPDATE artifacts SET status='returned_pending', version=version+1 WHERE id=?`, artIDs[0])
+	acc, err := env.Return.Accept(ctx, loanID, domain.AcceptPassWithNotes, "王五", "完好")
+	if err != nil {
+		t.Fatalf("复原后 pass_with_notes 验收应成功: %v", err)
+	}
+	if acc.Result != domain.AcceptPassWithNotes {
+		t.Fatalf("验收结果异常 %s", acc.Result)
+	}
+	loan, _ := env.Loan.Get(ctx, loanID)
+	if loan.Status != domain.LoanClosed {
+		t.Fatalf("验收成功后借展应 closed，实际 %s", loan.Status)
+	}
+	for _, id := range artIDs {
+		a, _ := env.Artifact.Get(ctx, id)
+		if a.Status != domain.ArtifactStored || a.StorageUnitID == nil {
+			t.Fatalf("验收成功后藏品应恢复在库，实际 %s %+v", a.Status, a.StorageUnitID)
+		}
+	}
+}
+
 // TestStablePagination 键集分页稳定：多页无重复无遗漏，顺序按主键。
 func TestStablePagination(t *testing.T) {
 	env := testenv.New(t)
