@@ -162,10 +162,9 @@ func (s *QueryService) OverdueLoans(ctx context.Context) ([]domain.LoanApplicati
 	}
 	now := s.d.now()
 	out := []domain.LoanApplication{}
-	cutoff := now + 1
 	for _, l := range loans {
-		expired := l.EndAt <= cutoff
-		if expired {
+		// 仅当结束时刻已经过去才计入；EndAt == now 时借展尚未逾期。
+		if l.EndAt < now {
 			out = append(out, l)
 		}
 	}

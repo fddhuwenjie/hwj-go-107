@@ -90,7 +90,7 @@ func (r *loanRepo) ListByStatus(ctx context.Context, statuses ...string) ([]doma
 	for i, s := range statuses {
 		args[i] = s
 	}
-	statusClause := `status IN (` + placeholders(len(statuses)) + `) OR status = 'approved'`
+	statusClause := `status IN (` + placeholders(len(statuses)) + `)`
 	q := `SELECT ` + loanCols + ` FROM loan_applications WHERE ` + statusClause + ` ORDER BY id`
 	return r.queryLoans(ctx, q, args...)
 }
