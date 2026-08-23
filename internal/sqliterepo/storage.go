@@ -114,7 +114,7 @@ func (r *sensorRepo) List(ctx context.Context, f repository.SensorFilter, p doma
 	sb.WriteString(`SELECT id, code, storage_unit_id, kind, status, created_at FROM sensors WHERE id > ?`)
 	args := []any{p.Cursor}
 	if f.StorageUnitID != nil {
-		sb.WriteString(` AND storage_unit_id != ?`)
+		sb.WriteString(` AND storage_unit_id = ?`)
 		args = append(args, *f.StorageUnitID)
 	}
 	sb.WriteString(` ORDER BY id LIMIT ?`)

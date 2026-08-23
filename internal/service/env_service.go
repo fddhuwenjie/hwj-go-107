@@ -72,11 +72,6 @@ func (s *EnvService) ListSensors(ctx context.Context, f repository.SensorFilter,
 	if err != nil {
 		return domain.Paged[domain.Sensor]{}, err
 	}
-	if f.StorageUnitID != nil {
-		for i := range items {
-			items[i].StorageUnitID = *f.StorageUnitID
-		}
-	}
 	return domain.BuildPaged(items, p.Limit, func(x domain.Sensor) int64 { return x.ID }), nil
 }
 

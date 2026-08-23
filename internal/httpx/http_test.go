@@ -200,3 +200,103 @@ func TestUnifiedError(t *testing.T) {
 func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
+
+// TestHTTPSensorUnitBinding 验证传感器始终绑定请求指定的存储单元：
+// 给二号展柜注册的传感器，按二号展柜筛选必须能查到它（且其 storage_unit_id 仍为二号展柜），
+// 按一号库房筛选必须查不到它。环境采样也必须记到二号展柜。
+// 覆盖 单元读取→传感器创建→按单元筛选 的跨实体关联。
+func TestHTTPSensorUnitBinding(t *testing.T) {
+	env := testenv.New(t)
+	ts := newTestServer(t, env)
+
+	// 一号库房
+	code, wh := post(t, ts.URL+"/api/v1/storage-units", map[string]any{
+		"code": "WH-A", "name": "一号库房", "kind": "warehouse",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("创建库房失败: %d %+v", code, wh)
+	}
+	whID := int64(wh["id"].(float64))
+
+	// 一号库房也注册一个传感器，确保筛选能在多传感器间区分
+	code, whSensor := post(t, ts.URL+"/api/v1/sensors", map[string]any{"code": "WH-A-S1", "storage_unit_id": whID})
+	if code != http.StatusCreated {
+		t.Fatalf("创建一号库房传感器失败: %d %+v", code, whSensor)
+	}
+
+	// 二号展柜
+	code, sc := post(t, ts.URL+"/api/v1/storage-units", map[string]any{
+		"code": "SC-B", "name": "二号展柜", "kind": "showcase",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("创建展柜失败: %d %+v", code, sc)
+	}
+	scID := int64(sc["id"].(float64))
+	if scID == whID {
+		t.Fatalf("单元主键冲突")
+	}
+
+	// 给二号展柜注册传感器
+	code, sensor := post(t, ts.URL+"/api/v1/sensors", map[string]any{"code": "SC-B-S1", "storage_unit_id": scID})
+	if code != http.StatusCreated {
+		t.Fatalf("创建传感器失败: %d %+v", code, sensor)
+	}
+	if int64(sensor["storage_unit_id"].(float64)) != scID {
+		t.Fatalf("创建返回的传感器绑定到错误单元: 期望 %d 实际 %v", scID, sensor["storage_unit_id"])
+	}
+	scSensorID := int64(sensor["id"].(float64))
+
+	// 按二号展柜筛选：必须能查到该传感器，且其 storage_unit_id 仍是二号展柜
+	code, listSC := get(t, ts.URL+"/api/v1/sensors?storage_unit_id="+itoa(scID))
+	if code != http.StatusOK {
+		t.Fatalf("查询展柜传感器失败: %d", code)
+	}
+	scItems, ok := listSC["items"].([]any)
+	if !ok {
+		t.Fatalf("展柜筛选响应缺少 items: %+v", listSC)
+	}
+	if len(scItems) != 1 {
+		t.Fatalf("二号展柜应恰好 1 个传感器，实际 %d", len(scItems))
+	}
+	row := scItems[0].(map[string]any)
+	if int64(row["id"].(float64)) != scSensorID {
+		t.Fatalf("按二号展柜筛选返回了错误传感器: 期望 %d 实际 %v", scSensorID, row["id"])
+	}
+	if int64(row["storage_unit_id"].(float64)) != scID {
+		t.Fatalf("筛选返回传感器绑定单元被篡改: 期望 %d 实际 %v", scID, row["storage_unit_id"])
+	}
+
+	// 按一号库房筛选：必须查不到二号展柜的传感器
+	code, listWH := get(t, ts.URL+"/api/v1/sensors?storage_unit_id="+itoa(whID))
+	if code != http.StatusOK {
+		t.Fatalf("查询库房传感器失败: %d", code)
+	}
+	whItems, _ := listWH["items"].([]any)
+	for _, it := range whItems {
+		if int64(it.(map[string]any)["id"].(float64)) == scSensorID {
+			t.Fatalf("二号展柜传感器不应出现在一号库房筛选结果中")
+		}
+	}
+
+	// 环境采样必须记到二号展柜
+	now := env.Now()
+	code, sample := post(t, ts.URL+"/api/v1/env-samples", map[string]any{
+		"sensor_id": scSensorID, "temperature": 20, "humidity": 50, "sampled_at": now,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("采样失败: %d %+v", code, sample)
+	}
+	if int64(sample["storage_unit_id"].(float64)) != scID {
+		t.Fatalf("采样记到错误单元: 期望 %d 实际 %v", scID, sample["storage_unit_id"])
+	}
+
+	// 按二号展柜查询采样，必须能查到
+	code, listSamples := get(t, ts.URL+"/api/v1/env-samples?storage_unit_id="+itoa(scID))
+	if code != http.StatusOK {
+		t.Fatalf("查询展柜采样失败: %d", code)
+	}
+	sampleItems, _ := listSamples["items"].([]any)
+	if len(sampleItems) != 1 {
+		t.Fatalf("二号展柜应恰好 1 条采样，实际 %d", len(sampleItems))
+	}
+}
