@@ -190,8 +190,10 @@ func (r *checkRepo) CreateItem(ctx context.Context, it *domain.InventoryCheckIte
 }
 
 func (r *checkRepo) ItemsByCheck(ctx context.Context, checkID int64) ([]domain.InventoryCheckItem, error) {
+	// 返回该清点单全部明细：attachment_id 为 0 的藏品本体行与 >0 的附件行各自独立成行。
+	// 差异比对按 (artifact_id, attachment_id) 维度派生真实结果，故此处须读取全部行而非只取本体行。
 	rows, err := r.q.QueryContext(ctx, `SELECT id, check_id, artifact_id, attachment_id, present, note
-		FROM inventory_check_items WHERE check_id=? AND attachment_id=0 ORDER BY id`, checkID)
+		FROM inventory_check_items WHERE check_id=? ORDER BY id`, checkID)
 	if err != nil {
 		return nil, err
 	}

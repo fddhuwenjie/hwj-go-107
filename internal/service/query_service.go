@@ -126,19 +126,17 @@ func (s *QueryService) PackagingDiff(ctx context.Context, loanID int64, directio
 	if err != nil {
 		return nil, err
 	}
+	// 藏品本体（attachment_id=0）与每个附件（attachment_id>0）各自独立成行，
+	// 按 (artifact_id, attachment_id) 维度派生真实在场结果：附件不得覆盖本体。
 	presentMap := map[[2]int64]bool{}
-	byArtifact := map[int64]bool{}
 	for _, ci := range checkItems {
-		byArtifact[ci.ArtifactID] = ci.Present
-	}
-	for artifactID, present := range byArtifact {
-		presentMap[[2]int64{artifactID, 0}] = present
+		presentMap[[2]int64{ci.ArtifactID, ci.AttachmentID}] = ci.Present
 	}
 	out := []PackagingDiffRow{}
 	for _, li := range items {
-		present := presentMap[[2]int64{li.ArtifactID, 0}]
-		row := PackagingDiffRow{ArtifactID: li.ArtifactID, ExpectedCount: true, Present: present, Diff: "ok"}
-		if !present {
+		bodyPresent := presentMap[[2]int64{li.ArtifactID, 0}]
+		row := PackagingDiffRow{ArtifactID: li.ArtifactID, ExpectedCount: true, Present: bodyPresent, Diff: "ok"}
+		if !bodyPresent {
 			row.Diff = "missing_artifact"
 		}
 		out = append(out, row)
