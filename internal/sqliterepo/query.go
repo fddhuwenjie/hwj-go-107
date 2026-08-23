@@ -40,6 +40,8 @@ ORDER BY la.id, a.id`, now, until)
 }
 
 // WarehouseRiskRanking 库房风险排序：未关闭异常级别加权 + 近期越界采样数。
+// 统计窗口只依据采样发生时间 sampled_at >= since（覆盖最近 24 小时）；
+// 迟到数据（late=1）仅存档，一律排除，不因接收时间较新而被计入。
 // 越界判定借助阈值规则，在 SQL 中以最严格启用规则区间近似；精确判定在服务层补充。
 func (r *queryRepo) WarehouseRiskRanking(ctx context.Context, since int64) ([]repository.WarehouseRiskRow, error) {
 	rows, err := r.q.QueryContext(ctx, `
@@ -57,7 +59,7 @@ recent_breach AS (
     JOIN artifacts a ON a.storage_unit_id = s.storage_unit_id AND a.retired = 0
     JOIN threshold_rule_versions rv ON rv.level_id = a.level_id AND rv.status = 'active'
     WHERE s.sampled_at >= ?
-      AND (s.received_at >= ? OR s.late = 0)
+      AND s.late = 0
       AND (s.temperature < rv.temp_min OR s.temperature > rv.temp_max
            OR s.humidity < rv.humidity_min OR s.humidity > rv.humidity_max)
     GROUP BY s.storage_unit_id
@@ -68,7 +70,7 @@ FROM storage_units u
 LEFT JOIN open_ae o ON o.storage_unit_id = u.id
 LEFT JOIN recent_breach b ON b.storage_unit_id = u.id
 WHERE u.kind = 'warehouse'
-ORDER BY (COALESCE(o.sev_score, 0) + COALESCE(b.breach_cnt, 0)) DESC, u.id`, since, since)
+ORDER BY (COALESCE(o.sev_score, 0) + COALESCE(b.breach_cnt, 0)) DESC, u.id`, since)
 	if err != nil {
 		return nil, err
 	}

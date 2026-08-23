@@ -26,10 +26,11 @@ func (s *QueryService) UpcomingWithAnomalies(ctx context.Context, days int) ([]r
 	return s.d.Repo.Queries.UpcomingLoansWithAnomalies(ctx, now, now+int64(days)*86400)
 }
 
-// WarehouseRiskRanking 库房风险排序（近 24 小时越界采样计入）。
+// WarehouseRiskRanking 库房风险排序：未关闭异常级别加权加最近 24 小时越界采样数。
+// 统计窗口只依据采样发生时间（sampled_at）覆盖最近 24 小时，迟到数据在仓储层排除。
 func (s *QueryService) WarehouseRiskRanking(ctx context.Context) ([]repository.WarehouseRiskRow, error) {
 	now := s.d.now()
-	windowStart := now - 2*86400
+	windowStart := now - 24*3600 // 仅依据采样发生时间覆盖最近 24 小时
 	return s.d.Repo.Queries.WarehouseRiskRanking(ctx, windowStart)
 }
 
