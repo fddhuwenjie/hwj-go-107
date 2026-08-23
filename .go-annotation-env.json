@@ -1,0 +1,6 @@
+{
+  "go_toolchain": "go1.26.5",
+  "go_language_version": "1.21",
+  "gotoolchain": "local",
+  "docker_base_digest": "golang@sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d0d6baa7f26acb4957dd"
+}
