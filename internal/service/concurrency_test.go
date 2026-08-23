@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	"gowork/internal/domain"
@@ -165,5 +166,96 @@ func TestStablePagination(t *testing.T) {
 	}
 	if pages != 3 { // 10+10+5
 		t.Fatalf("页数异常 %d", pages)
+	}
+}
+
+// TestArtifactGetSnapshotIndependentLifecycle 验证并发读取藏品时返回的快照拥有独立生命周期：
+// 先返回的对象在后续查询结束后，其编号、名称、版本不会被改成另一件藏品；
+// 调用方持有的旧结果也不会随后续读取而变化。
+func TestArtifactGetSnapshotIndependentLifecycle(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	lv := env.SetupLevelWithRule("LV-S1")
+	wh, _ := env.SetupWarehouse("WH-S1")
+	art1 := env.RegisterStoredArtifact("WJ-S1", lv.ID, wh.ID)
+	art2 := env.RegisterStoredArtifact("WJ-S2", lv.ID, wh.ID)
+
+	// 并发读取两件不同藏品。先返回的对象在另一读取结束后必须保持自身快照。
+	var a1, a2 *domain.Artifact
+	var err1, err2 error
+	done := make(chan struct{})
+	go func() {
+		a1, err1 = env.Artifact.Get(ctx, art1.ID)
+		close(done)
+	}()
+	a2, err2 = env.Artifact.Get(ctx, art2.ID)
+	<-done
+
+	if err1 != nil || err2 != nil {
+		t.Fatalf("读取失败 a1=%v a2=%v", err1, err2)
+	}
+	// 取较小 id 为“先返回”，确保两次读取目标不同。
+	if a1.ID > a2.ID {
+		a1, a2 = a2, a1
+	}
+	if a1.ID != a1.ID || a1.Code == a2.Code {
+		t.Fatalf("快照应指向不同藏品，got id=%d/%d code=%q/%q", a1.ID, a2.ID, a1.Code, a2.Code)
+	}
+
+	// 关键断言：先返回的对象在第二次读取完成后，编号/名称/版本不得被改成另一件藏品。
+	snap := *a1 // 捕获第一个快照的全部字段
+	if _, err := env.Artifact.Get(ctx, art2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Artifact.Get(ctx, art1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if a1.ID != snap.ID || a1.Code != snap.Code || a1.Name != snap.Name || a1.Version != snap.Version {
+		t.Fatalf("先返回的快照被后续读取污染：id %d->%d code %q->%q name %q->%q version %d->%d",
+			snap.ID, a1.ID, snap.Code, a1.Code, snap.Name, a1.Name, snap.Version, a1.Version)
+	}
+	if a1.ID != art1.ID || a1.Code != art1.Code {
+		t.Fatalf("快照内容与原始藏品不符：id=%d code=%q", a1.ID, a1.Code)
+	}
+
+	// 直接仓储层并发读取同样不应互相覆盖。
+	const n = 16
+	got := make([]*domain.Artifact, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			<-start
+			id := art1.ID
+			if i%2 == 1 {
+				id = art2.ID
+			}
+			got[i], errs[i] = env.Repo.Artifacts.GetByID(ctx, id)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	for i := range got {
+		if errs[i] != nil {
+			t.Fatalf("仓储并发读取失败: %v", errs[i])
+		}
+		want := art1.ID
+		if i%2 == 1 {
+			want = art2.ID
+		}
+		if got[i].ID != want {
+			t.Fatalf("仓储读取快照污染：第 %d 个期望 id=%d 实际 id=%d", i, want, got[i].ID)
+		}
+		// 每个 returned 指针必须各自独立：再读一次后不变。
+		frozen := *got[i]
+		_, _ = env.Repo.Artifacts.GetByID(ctx, art1.ID)
+		_, _ = env.Repo.Artifacts.GetByID(ctx, art2.ID)
+		if got[i].ID != frozen.ID || got[i].Code != frozen.Code || got[i].Version != frozen.Version {
+			t.Fatalf("仓储快照被后续读取覆盖：第 %d 个 id %d->%d", i, frozen.ID, got[i].ID)
+		}
 	}
 }

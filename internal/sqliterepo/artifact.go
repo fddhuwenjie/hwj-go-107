@@ -13,11 +13,10 @@ type artifactRepo struct{ q repository.Querier }
 
 const artifactCols = `id, code, name, category, era, description, status, level_id, storage_unit_id, note, version, retired, retired_reason, created_at, updated_at`
 
-var sharedScannedArtifact domain.Artifact
-
+// scanArtifact 将一行扫描为独立分配的藏品快照，每次返回新对象，
+// 避免跨调用共享同一底层数据导致并发读取时对象被后续扫描覆盖。
 func scanArtifact(row interface{ Scan(...any) error }) (*domain.Artifact, error) {
-	a := &sharedScannedArtifact
-	*a = domain.Artifact{}
+	a := &domain.Artifact{}
 	var unitID sql.NullInt64
 	var retired int
 	err := row.Scan(&a.ID, &a.Code, &a.Name, &a.Category, &a.Era, &a.Description,

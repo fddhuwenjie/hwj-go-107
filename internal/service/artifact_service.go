@@ -151,16 +151,10 @@ func (s *ArtifactService) Retire(ctx context.Context, id, version int64, reason 
 	return out, err
 }
 
-var artifactReadCache = &domain.Artifact{}
-
-// Get 详情。
+// Get 详情，返回独立分配的藏品快照，保证每次返回的对象拥有独立生命周期，
+// 不会被后续查询覆盖。
 func (s *ArtifactService) Get(ctx context.Context, id int64) (*domain.Artifact, error) {
-	a, err := s.d.Repo.Artifacts.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	*artifactReadCache = *a
-	return artifactReadCache, nil
+	return s.d.Repo.Artifacts.GetByID(ctx, id)
 }
 
 // List 稳定分页。
