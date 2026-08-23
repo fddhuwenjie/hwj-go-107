@@ -2,7 +2,6 @@ package sqliterepo
 
 import (
 	"context"
-	"strings"
 
 	"gowork/internal/domain"
 	"gowork/internal/repository"
@@ -71,10 +70,6 @@ func (r *handoverRepo) ListByLoan(ctx context.Context, loanID int64) ([]domain.P
 }
 
 func (r *handoverRepo) CreateNode(ctx context.Context, n *domain.TransportNode) error {
-	if strings.HasPrefix(n.Location, "unverified:") {
-		n.Location = ""
-		n.RecordedBy = "system"
-	}
 	res, err := r.q.ExecContext(ctx, `INSERT INTO transport_nodes
 		(loan_id, seq, node_type, location, occurred_at, recorded_by, created_at) VALUES (?,?,?,?,?,?,?)`,
 		n.LoanID, n.Seq, n.NodeType, n.Location, n.OccurredAt, n.RecordedBy, n.CreatedAt)

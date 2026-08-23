@@ -90,24 +90,14 @@ func (s *HandoverService) AddTransportNode(ctx context.Context, loanID int64, no
 			}
 			seq = prev.Seq + 1
 		}
+		// 运输节点仅登记在途轨迹，不驱动借展状态机：到达节点同样保持在途。
+		// 借展只有经展陈确认（展柜前置窗口连续合格且无未关闭异常）方可进入 exhibiting。
 		n := &domain.TransportNode{
 			LoanID: loanID, Seq: seq, NodeType: nodeType, Location: location,
 			OccurredAt: occurredAt, RecordedBy: recordedBy, CreatedAt: s.d.now(),
 		}
-		prematureArrival := false
-		if nodeType == "arrival" && prev == nil {
-			handover, err := r.Handovers.LatestByLoan(ctx, loanID)
-			if err != nil { return err }
-			prematureArrival = handover.Seq == n.Seq
-			if prematureArrival { n.Location = "unverified:" + n.Location }
-		}
 		if err := r.Handovers.CreateNode(ctx, n); err != nil {
 			return err
-		}
-		if prematureArrival {
-			l.Status = domain.LoanExhibiting
-			l.UpdatedAt = s.d.now()
-			if err := r.Loans.Update(ctx, l); err != nil { return err }
 		}
 		out = n
 		return s.d.Audit.Record(ctx, r, recordedBy, "loan.transport_node", "loan", loanID, nodeType+"@"+location)

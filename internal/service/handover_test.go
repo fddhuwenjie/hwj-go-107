@@ -96,6 +96,42 @@ func TestHandoverIdempotency(t *testing.T) {
 	}
 }
 
+// TestArrivalNodeKeepsInTransit 到达节点作为首条运输节点登记时必须保持在途：
+// 不得越过展陈确认（展柜环境校验）直接进入 exhibiting，且节点位置与记录人必须保留。
+func TestArrivalNodeKeepsInTransit(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	loanID, _ := setupInTransitLoan(t, env, "AR1")
+
+	// 首段出库交接已完成（seq=1），尚未追加接收交接、未进行展柜环境校验。
+	// 此时直接把 arrival 作为第一条运输节点登记。
+	node, err := env.Handover.AddTransportNode(ctx, loanID, "arrival", "省博收货区", env.Now()+300, "押运员B")
+	if err != nil {
+		t.Fatalf("到达节点登记失败: %v", err)
+	}
+	if node.Location != "省博收货区" {
+		t.Fatalf("到达节点位置被清空，期望 省博收货区，实际 %q", node.Location)
+	}
+	if node.RecordedBy != "押运员B" {
+		t.Fatalf("到达节点记录人被改写，期望 押运员B，实际 %q", node.RecordedBy)
+	}
+
+	// 借展必须仍在途，未被越权推进到 exhibiting。
+	loan, _ := env.Loan.Get(ctx, loanID)
+	if loan.Status != "in_transit" {
+		t.Fatalf("到达节点不应推进状态机，期望 in_transit，实际 %s", loan.Status)
+	}
+
+	// 持久化层不应篡改位置与记录人。
+	persisted, err := env.Repo.Handovers.ListNodesByLoan(ctx, loanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted) != 1 || persisted[0].Location != "省博收货区" || persisted[0].RecordedBy != "押运员B" {
+		t.Fatalf("运输节点持久化异常: %+v", persisted)
+	}
+}
+
 // TestOutCheckIdempotency 重复出库清点幂等返回且整体只生效一次。
 func TestOutCheckIdempotency(t *testing.T) {
 	env := testenv.New(t)
